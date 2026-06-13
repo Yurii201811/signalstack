@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+work/
+outputs/*before-fix*
+data/*.db
+data/*.db-shm
+data/*.db-wal
+.env
+.env.local
+.DS_Store
