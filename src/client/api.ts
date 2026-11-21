@@ -72,6 +72,17 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     });
+  },
+  deleteOpportunity(id: string) {
+    return request<void>(`/api/opportunities/${id}`, {
+      method: "DELETE"
+    });
+  },
+  exportUrl(format: "csv" | "json", filters: { query?: string; status?: string }) {
+    const params = new URLSearchParams({ format });
+    if (filters.query) params.set("query", filters.query);
+    if (filters.status) params.set("status", filters.status);
+    return `${apiBase}/api/opportunities/export?${params.toString()}`;
   }
 };
 

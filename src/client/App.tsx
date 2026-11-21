@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   Clock3,
+  Download,
   FlaskConical,
   Gauge,
   KanbanSquare,
@@ -19,6 +20,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Target,
+  Trash2,
   UserCircle2,
   X
 } from "lucide-react";
@@ -31,6 +33,7 @@ import {
   Opportunity,
   OpportunityStatus,
   ReachLevel,
+  UpdateOpportunityInput,
   User,
   effortLevels,
   reachLevels,
@@ -117,9 +120,20 @@ export function App() {
   }
 
   async function handleCreate(input: CreateOpportunityInput) {
-    const { opportunity } = await api.createOpportunity(input);
-    setSelected(opportunity);
+    await api.createOpportunity(input);
     setModalOpen(false);
+    loadDashboard();
+  }
+
+  async function handleUpdate(id: string, input: UpdateOpportunityInput) {
+    await api.updateOpportunity(id, input);
+    setSelected(null);
+    loadDashboard();
+  }
+
+  async function handleDelete(id: string) {
+    await api.deleteOpportunity(id);
+    setSelected(null);
     loadDashboard();
   }
 
@@ -219,6 +233,14 @@ export function App() {
                   ))}
                 </select>
               </label>
+              <a
+                className="secondary-button"
+                href={api.exportUrl("csv", { query, status })}
+                download="signalstack-opportunities.csv"
+              >
+                <Download size={16} />
+                Export CSV
+              </a>
               <button className="primary-button" onClick={() => setModalOpen(true)}>
                 <Plus size={18} />
                 Create Opportunity
@@ -234,6 +256,7 @@ export function App() {
               selected={selected}
               onSelect={setSelected}
               onMove={handleMove}
+              onCreateOpen={() => setModalOpen(true)}
             />
           ) : null}
           {activeNav === "Opportunities" && dashboard ? (
@@ -244,7 +267,18 @@ export function App() {
         </section>
       </main>
 
-      {modalOpen ? <OpportunityModal onClose={() => setModalOpen(false)} onSubmit={handleCreate} user={user} /> : null}
+      {modalOpen ? (
+        <OpportunityModal onClose={() => setModalOpen(false)} onSubmit={handleCreate} user={user} />
+      ) : null}
+      {selected ? (
+        <OpportunityModal
+          initial={selected}
+          onClose={() => setSelected(null)}
+          onSubmit={(input) => handleUpdate(selected.id, input)}
+          onDelete={() => handleDelete(selected.id)}
+          user={user}
+        />
+      ) : null}
     </div>
   );
 }
@@ -339,12 +373,14 @@ function DashboardView({
   data,
   selected,
   onSelect,
-  onMove
+  onMove,
+  onCreateOpen
 }: {
   data: DashboardPayload;
   selected: Opportunity | null;
   onSelect: (opportunity: Opportunity) => void;
   onMove: (opportunity: Opportunity) => void;
+  onCreateOpen: () => void;
 }) {
   const topOpportunities = data.opportunities.slice(0, 6);
   const activeSelection = selected ?? data.recommendation.opportunity ?? topOpportunities[0] ?? null;
@@ -380,7 +416,7 @@ function DashboardView({
                     <span>Score: {opportunity.score}</span>
                   </button>
                 ))}
-                <button className="add-inline">
+                <button className="add-inline" type="button" onClick={onCreateOpen}>
                   <Plus size={14} />
                   Add opportunity
                 </button>
@@ -651,26 +687,35 @@ function SettingsView({ user }: { user: User }) {
 }
 
 function OpportunityModal({
+  initial,
   onClose,
   onSubmit,
+  onDelete,
   user
 }: {
+  initial?: Opportunity;
   onClose: () => void;
-  onSubmit: (input: CreateOpportunityInput) => Promise<void>;
+  onSubmit: (input: CreateOpportunityInput & { status?: OpportunityStatus }) => Promise<void>;
+  onDelete?: () => Promise<void>;
   user: User;
 }) {
-  const [title, setTitle] = useState("Customer health risk alerts");
-  const [customer, setCustomer] = useState("Customer success teams");
-  const [problem, setProblem] = useState("Account teams do not see adoption risk until renewal conversations are already at risk.");
-  const [impact, setImpact] = useState(280000);
-  const [confidence, setConfidence] = useState(64);
-  const [effort, setEffort] = useState<EffortLevel>("M");
-  const [reach, setReach] = useState<ReachLevel>("High");
-  const [owner, setOwner] = useState(user.name);
-  const [dueDate, setDueDate] = useState("2026-07-15");
-  const [tags, setTags] = useState("Retention, Analytics");
+  const isEditing = Boolean(initial);
+  const [title, setTitle] = useState(initial?.title ?? "Customer health risk alerts");
+  const [customer, setCustomer] = useState(initial?.customer ?? "Customer success teams");
+  const [problem, setProblem] = useState(
+    initial?.problem ?? "Account teams do not see adoption risk until renewal conversations are already at risk."
+  );
+  const [status, setStatus] = useState<OpportunityStatus>(initial?.status ?? "captured");
+  const [impact, setImpact] = useState(initial?.impact ?? 280000);
+  const [confidence, setConfidence] = useState(initial?.confidence ?? 64);
+  const [effort, setEffort] = useState<EffortLevel>(initial?.effort ?? "M");
+  const [reach, setReach] = useState<ReachLevel>(initial?.reach ?? "High");
+  const [owner, setOwner] = useState(initial?.owner ?? user.name);
+  const [dueDate, setDueDate] = useState(initial?.dueDate ?? "2026-07-15");
+  const [tags, setTags] = useState(initial ? initial.tags.join(", ") : "Retention, Analytics");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const parsedTags = useMemo(
     () =>
@@ -691,6 +736,7 @@ function OpportunityModal({
         title,
         customer,
         problem,
+        ...(isEditing ? { status } : {}),
         impact,
         confidence,
         effort,
@@ -700,8 +746,20 @@ function OpportunityModal({
         tags: parsedTags
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create opportunity");
+      setError(err instanceof Error ? err.message : isEditing ? "Could not update opportunity" : "Could not create opportunity");
     } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function confirmAndDelete() {
+    if (!onDelete) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onDelete();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete opportunity");
       setSubmitting(false);
     }
   }
@@ -711,8 +769,12 @@ function OpportunityModal({
       <section className="modal" role="dialog" aria-modal="true" aria-labelledby="create-title">
         <div className="modal-heading">
           <div>
-            <h2 id="create-title">Create Opportunity</h2>
-            <p>Score a product bet and add it to the live pipeline.</p>
+            <h2 id="create-title">{isEditing ? "Edit Opportunity" : "Create Opportunity"}</h2>
+            <p>
+              {isEditing
+                ? `Score: ${initial?.score}/100 — update fields, change stage, or remove from pipeline.`
+                : "Score a product bet and add it to the live pipeline."}
+            </p>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close">
             <X size={18} />
@@ -731,6 +793,18 @@ function OpportunityModal({
             Problem
             <textarea value={problem} onChange={(event) => setProblem(event.target.value)} rows={3} />
           </label>
+          {isEditing ? (
+            <label className="span-2">
+              Stage
+              <select value={status} onChange={(event) => setStatus(event.target.value as OpportunityStatus)}>
+                {statusOrder.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {statusLabels[stage]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label>
             Expected impact
             <input value={impact} onChange={(event) => setImpact(Number(event.target.value))} type="number" min={1000} />
@@ -769,11 +843,34 @@ function OpportunityModal({
           </label>
           {error ? <div className="error-banner span-2">{error}</div> : null}
           <div className="form-actions span-2">
+            {isEditing && onDelete ? (
+              confirmDelete ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={submitting}
+                  onClick={confirmAndDelete}
+                >
+                  <Trash2 size={15} />
+                  Confirm delete
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={submitting}
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  <Trash2 size={15} />
+                  Delete
+                </button>
+              )
+            ) : null}
             <button type="button" className="secondary-button" onClick={onClose}>
               Cancel
             </button>
             <button className="primary-button" disabled={submitting}>
-              {submitting ? "Creating..." : "Create Opportunity"}
+              {submitting ? (isEditing ? "Saving..." : "Creating...") : isEditing ? "Save Changes" : "Create Opportunity"}
               <ChevronRight size={16} />
             </button>
           </div>

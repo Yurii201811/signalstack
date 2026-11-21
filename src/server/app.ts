@@ -5,12 +5,13 @@ import express, { type NextFunction, type Request, type Response } from "express
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { effortLevels, reachLevels, statusOrder, type OpportunityStatus, type User } from "../shared/types.js";
+import { effortLevels, reachLevels, statusOrder, type Opportunity, type OpportunityStatus, type User } from "../shared/types.js";
 import type { SignalStackDb } from "./database.js";
 import {
   createOpportunity,
   createSession,
   createUser,
+  deleteOpportunity,
   deleteSession,
   findUserByEmail,
   findUserBySession,
@@ -25,6 +26,72 @@ import {
 } from "./repository.js";
 
 const sessionCookie = "signalstack_session";
+const defaultCorsOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4000",
+  "http://127.0.0.1:4000"
+];
+
+function configuredCorsOrigins(): Set<string> {
+  const raw = process.env.SIGNALSTACK_CORS_ORIGINS;
+  const list = raw
+    ? raw
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    : defaultCorsOrigins;
+  return new Set(list);
+}
+
+function escapeCsvCell(value: string | number | null): string {
+  const raw = value === null ? "" : String(value);
+  const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  if (/[",\r\n]/.test(safe)) {
+    return `"${safe.replace(/"/g, "\"\"")}"`;
+  }
+  return safe;
+}
+
+function opportunitiesToCsv(opportunities: Opportunity[]): string {
+  const headers = [
+    "id",
+    "title",
+    "customer",
+    "problem",
+    "status",
+    "score",
+    "impact",
+    "confidence",
+    "effort",
+    "reach",
+    "owner",
+    "dueDate",
+    "tags",
+    "updatedAt"
+  ];
+  const rows = opportunities.map((item) =>
+    [
+      item.id,
+      item.title,
+      item.customer,
+      item.problem,
+      item.status,
+      item.score,
+      item.impact,
+      item.confidence,
+      item.effort,
+      item.reach,
+      item.owner,
+      item.dueDate,
+      item.tags.join("; "),
+      item.updatedAt
+    ]
+      .map(escapeCsvCell)
+      .join(",")
+  );
+  return [headers.join(","), ...rows].join("\n") + "\n";
+}
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -61,9 +128,16 @@ export function createApp({ db, clientDist }: { db: SignalStackDb; clientDist?: 
 
   app.use(express.json());
   app.use(cookieParser());
+  const allowedOrigins = configuredCorsOrigins();
   app.use(
     cors({
-      origin: true,
+      origin(origin, callback) {
+        if (!origin || allowedOrigins.has(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(null, false);
+      },
       credentials: true
     })
   );
@@ -171,8 +245,35 @@ export function createApp({ db, clientDist }: { db: SignalStackDb; clientDist?: 
     });
   });
 
-  app.get("/api/opportunities", requireAuth, (_req, res) => {
-    res.json({ opportunities: listOpportunities(db) });
+  app.get("/api/opportunities", requireAuth, (req, res) => {
+    const query = typeof req.query.query === "string" ? req.query.query : undefined;
+    const rawStatus = typeof req.query.status === "string" ? req.query.status : undefined;
+    const status = statusOrder.includes(rawStatus as OpportunityStatus) ? (rawStatus as OpportunityStatus) : undefined;
+    res.json({ opportunities: listOpportunities(db, { query, status }) });
+  });
+
+  app.get("/api/opportunities/export", requireAuth, (req, res) => {
+    const format = typeof req.query.format === "string" ? req.query.format.toLowerCase() : "json";
+    if (format !== "csv" && format !== "json") {
+      res.status(400).json({ error: "Export format must be csv or json" });
+      return;
+    }
+
+    const query = typeof req.query.query === "string" ? req.query.query : undefined;
+    const rawStatus = typeof req.query.status === "string" ? req.query.status : undefined;
+    const status = statusOrder.includes(rawStatus as OpportunityStatus) ? (rawStatus as OpportunityStatus) : undefined;
+    const opportunities = listOpportunities(db, { query, status });
+
+    if (format === "csv") {
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", 'attachment; filename="signalstack-opportunities.csv"');
+      res.send(opportunitiesToCsv(opportunities));
+      return;
+    }
+
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="signalstack-opportunities.json"');
+    res.send(JSON.stringify({ exportedAt: new Date().toISOString(), count: opportunities.length, opportunities }, null, 2));
   });
 
   app.post("/api/opportunities", requireAuth, (req: AuthedRequest, res) => {
@@ -200,6 +301,21 @@ export function createApp({ db, clientDist }: { db: SignalStackDb; clientDist?: 
     }
 
     res.json({ opportunity });
+  });
+
+  app.delete("/api/opportunities/:id", requireAuth, (req: AuthedRequest, res) => {
+    if (!req.user) {
+      res.status(401).json({ error: "Not signed in" });
+      return;
+    }
+
+    const deleted = deleteOpportunity(db, req.params.id, req.user);
+    if (!deleted) {
+      res.status(404).json({ error: "Opportunity not found" });
+      return;
+    }
+
+    res.status(204).send();
   });
 
   const staticDir = clientDist ?? path.resolve(process.cwd(), "dist", "client");
