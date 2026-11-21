@@ -278,19 +278,35 @@ export function updateOpportunity(db: SignalStackDb, id: string, input: UpdateOp
     addActivity(db, {
       opportunityId: id,
       type,
-      message: `Opportunity moved to ${statusLabels[input.status]}: ${current.title}`,
+      message: `Opportunity moved to ${statusLabels[input.status]}: ${next.title}`,
       actor: user.name
     });
   } else {
     addActivity(db, {
       opportunityId: id,
       type: "scored",
-      message: `Opportunity rescored: ${current.title}`,
+      message: `Opportunity updated: ${next.title}`,
       actor: user.name
     });
   }
 
   return getOpportunity(db, id);
+}
+
+export function deleteOpportunity(db: SignalStackDb, id: string, user: User) {
+  const current = getOpportunity(db, id);
+  if (!current) {
+    return false;
+  }
+
+  db.prepare("DELETE FROM opportunities WHERE id = ?").run(id);
+  addActivity(db, {
+    opportunityId: null,
+    type: "note",
+    message: `Opportunity deleted: ${current.title}`,
+    actor: user.name
+  });
+  return true;
 }
 
 export function listActivities(db: SignalStackDb) {

@@ -1,6 +1,6 @@
 {
   "name": "signalstack",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "A full-stack product opportunity cockpit built as a portfolio-grade builder-engineer project.",
